@@ -116,9 +116,11 @@ def index():
                 ui.button('Open', on_click=lambda d=doc_id: ui.navigate.to(f'/docs/{d}')).props('flat')
 
 if __name__ in {"__main__", "__mp_main__"}:
+    import os
     ui.run(
         title='NiceGUI Live Collaboration',
-        port=8080,
+        host='0.0.0.0',
+        port=int(os.environ.get('PORT', 8080)),
         reload=False,
         show=False
     )
