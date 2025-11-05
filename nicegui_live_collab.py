@@ -131,8 +131,8 @@ async def doc_room(doc_id: str):
             if local_state['pending_save'] is not None:
                 local_state['pending_save'].deactivate()
             
-            # Schedule save after 400ms of no typing (FASTER!)
-            local_state['pending_save'] = ui.timer(0.4, lambda: [
+            # Schedule save after 200ms of no typing (FASTER!)
+            local_state['pending_save'] = ui.timer(0.2, lambda: [
                 save_to_server(),
                 setattr(local_state, 'is_typing', False)
             ], once=True)
@@ -150,9 +150,9 @@ async def doc_room(doc_id: str):
     # Bind events
     textarea.on('update:model-value', on_input)
     textarea.on('blur', on_blur)
-    
-    # Check for updates FASTER - every 200ms instead of 400ms
-    ui.timer(0.2, check_for_updates)
+
+    # Check for updates FASTER - every 100ms instead of 200ms
+    ui.timer(0.1, check_for_updates)
     
     # Instructions
     with ui.expansion('How to use', icon='info').classes('mt-4 max-w-3xl'):
@@ -163,9 +163,9 @@ async def doc_room(doc_id: str):
         3. Start typing - changes appear within 0.5-1 second
         
         **How it works:**
-        - Your changes auto-save 0.4 seconds after you stop typing
-        - Updates from others check every 0.2 seconds
-        - Active user count shows everyone currently viewing (updates every 0.2s)
+        - Your changes auto-save 0.2 seconds after you stop typing
+        - Updates from others check every 0.1 seconds
+        - Active user count shows everyone currently viewing (updates every 0.1s)
         - Last write wins (simple but effective)
         
         **Tips:**
