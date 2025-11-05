@@ -1,10 +1,12 @@
 # nicegui_live_collab.py
-from nicegui import ui
+from nicegui import ui, app
 from datetime import datetime
 import hashlib
+import uuid
 
 # In-memory shared storage
 documents = {}
+active_users = {}  # Track active users per document
 
 def get_hash(text):
     """Get hash of text for change detection"""
@@ -12,6 +14,9 @@ def get_hash(text):
 
 @ui.page('/docs/{doc_id}')
 async def doc_room(doc_id: str):
+    # Generate unique user ID for this session
+    user_id = str(uuid.uuid4())
+    
     # Initialize document if it doesn't exist
     if doc_id not in documents:
         documents[doc_id] = {
@@ -19,6 +24,13 @@ async def doc_room(doc_id: str):
             'version': 0,
             'last_updated': datetime.now()
         }
+    
+    # Initialize active users tracking for this doc
+    if doc_id not in active_users:
+        active_users[doc_id] = set()
+    
+    # Add this user to active users
+    active_users[doc_id].add(user_id)
     
     ui.label(f'Document: {doc_id}').classes('text-2xl font-bold mb-4')
     
@@ -35,17 +47,39 @@ async def doc_room(doc_id: str):
     local_state = {
         'version': documents[doc_id]['version'],
         'is_typing': False,
-        'last_hash': get_hash(documents[doc_id]['text'])
+        'last_hash': get_hash(documents[doc_id]['text']),
+        'pending_save': None  # Timer for auto-save
     }
     
     # Status indicators
     with ui.row().classes('gap-4 mt-2'):
         status = ui.label('🟢 Connected').classes('text-sm')
         last_sync = ui.label(f'Synced: {datetime.now().strftime("%H:%M:%S")}').classes('text-sm')
+        user_count = ui.label(f'👥 Active users: {len(active_users[doc_id])}').classes('text-sm')
+    
+    def save_to_server():
+        """Save current content to server"""
+        try:
+            documents[doc_id]['text'] = textarea.value
+            documents[doc_id]['version'] += 1
+            documents[doc_id]['last_updated'] = datetime.now()
+            
+            # Update local tracking
+            local_state['version'] = documents[doc_id]['version']
+            local_state['last_hash'] = get_hash(textarea.value)
+            
+            last_sync.text = f'Synced: {datetime.now().strftime("%H:%M:%S")}'
+            status.text = '🟢 Connected'
+            
+        except Exception as e:
+            status.text = f'🔴 Error: {str(e)}'
     
     async def check_for_updates():
         """Check for updates from other users"""
         try:
+            # Update user count
+            user_count.text = f'👥 Active users: {len(active_users[doc_id])}'
+            
             # Skip if user is currently typing
             if local_state['is_typing']:
                 return
@@ -62,52 +96,48 @@ async def doc_room(doc_id: str):
                     local_state['version'] = server_version
                     local_state['last_hash'] = server_hash
                     last_sync.text = f'Synced: {datetime.now().strftime("%H:%M:%S")}'
-                    status.text = '🟢 Synced'
         except Exception as e:
             status.text = f'🔴 Error: {str(e)}'
     
-    def on_change():
-        """When user types, save to server immediately"""
+    def on_input():
+        """Called on every keystroke"""
         try:
             local_state['is_typing'] = True
-            
-            # Save to server
-            documents[doc_id]['text'] = textarea.value
-            documents[doc_id]['version'] += 1
-            documents[doc_id]['last_updated'] = datetime.now()
-            
-            # Update local tracking
-            local_state['version'] = documents[doc_id]['version']
-            local_state['last_hash'] = get_hash(textarea.value)
-            
             status.text = '🟡 Typing...'
+            
+            # Cancel any pending save
+            if local_state['pending_save'] is not None:
+                local_state['pending_save'].deactivate()
+            
+            # Schedule save after 800ms of no typing
+            local_state['pending_save'] = ui.timer(0.8, lambda: [
+                save_to_server(),
+                setattr(local_state, 'is_typing', False)
+            ], once=True)
             
         except Exception as e:
             status.text = f'🔴 Error: {str(e)}'
     
     def on_blur():
-        """When user stops typing (loses focus)"""
+        """When textarea loses focus, save immediately"""
+        if local_state['pending_save'] is not None:
+            local_state['pending_save'].deactivate()
+        save_to_server()
         local_state['is_typing'] = False
-        status.text = '🟢 Connected'
-    
-    # Set typing flag to false after short delay
-    async def reset_typing_flag():
-        """Reset typing flag after 500ms of no input"""
-        import asyncio
-        await asyncio.sleep(0.5)
-        local_state['is_typing'] = False
-    
-    def on_input():
-        """Called on every keystroke"""
-        on_change()
-        ui.timer(0.5, reset_typing_flag, once=True)
     
     # Bind events
     textarea.on('update:model-value', on_input)
     textarea.on('blur', on_blur)
     
-    # Check for updates from other users every 300ms
-    ui.timer(0.3, check_for_updates)
+    # Check for updates from other users every 400ms
+    ui.timer(0.4, check_for_updates)
+    
+    # Remove user when they disconnect
+    def cleanup():
+        if user_id in active_users.get(doc_id, set()):
+            active_users[doc_id].discard(user_id)
+    
+    app.on_disconnect(cleanup)
     
     # Instructions
     with ui.expansion('How to use', icon='info').classes('mt-4 max-w-3xl'):
@@ -115,17 +145,18 @@ async def doc_room(doc_id: str):
         **Testing collaborative editing:**
         1. Share this URL with your teammates
         2. Everyone opens the same document URL
-        3. Start typing - changes appear almost instantly
+        3. Start typing - changes appear within 1 second
         
         **How it works:**
-        - Your changes save immediately as you type
-        - Updates from others appear when you pause typing (500ms)
-        - Last write wins (like Etherpad/simple collaborative editors)
+        - Your changes auto-save 0.8 seconds after you stop typing
+        - Updates from others appear when you pause typing
+        - Active user count shows everyone currently viewing the document
+        - Last write wins (simple but effective)
         
-        **Limitations:**
-        - If two people type at the exact same time, last save wins
-        - No cursor position syncing
-        - Best for taking turns or working on different sections
+        **Tips:**
+        - Click outside the text box to force an immediate save
+        - Works best when people take turns or work on different sections
+        - Refresh the page to see the latest content if something seems stuck
         ''')
 
 @ui.page('/')
@@ -157,7 +188,10 @@ def index():
         ui.label('Existing documents:').classes('text-xl font-bold mt-8 mb-2')
         for doc_id in documents.keys():
             with ui.card().classes('w-full max-w-md'):
-                ui.label(doc_id).classes('font-mono')
+                with ui.row().classes('w-full justify-between items-center'):
+                    ui.label(doc_id).classes('font-mono')
+                    if doc_id in active_users and len(active_users[doc_id]) > 0:
+                        ui.label(f'👥 {len(active_users[doc_id])}').classes('text-sm text-gray-600')
                 preview = documents[doc_id]['text'][:100]
                 if len(documents[doc_id]['text']) > 100:
                     preview += '...'
