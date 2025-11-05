@@ -1,68 +1,113 @@
 # nicegui_live_collab.py
 from nicegui import ui
 from datetime import datetime
+import hashlib
 
-# In-memory shared storage (works for single-process deployments)
+# In-memory shared storage
 documents = {}
 
+def get_hash(text):
+    """Get hash of text for change detection"""
+    return hashlib.md5(text.encode()).hexdigest()
+
 @ui.page('/docs/{doc_id}')
-def doc_room(doc_id: str):
+async def doc_room(doc_id: str):
     # Initialize document if it doesn't exist
     if doc_id not in documents:
-        documents[doc_id] = {'text': '', 'last_updated': datetime.now()}
+        documents[doc_id] = {
+            'text': '',
+            'version': 0,
+            'last_updated': datetime.now()
+        }
     
     ui.label(f'Document: {doc_id}').classes('text-2xl font-bold mb-4')
     
     # Create textarea
     textarea = ui.textarea(
         label='Live document (shared with all users)',
-        placeholder='Start typing... Changes sync every 2 seconds'
+        placeholder='Start typing... Syncs in real-time'
     ).props('outlined autogrow').classes('w-full')
     
     # Set initial value
     textarea.value = documents[doc_id]['text']
     
+    # Track local state
+    local_state = {
+        'version': documents[doc_id]['version'],
+        'is_typing': False,
+        'last_hash': get_hash(documents[doc_id]['text'])
+    }
+    
     # Status indicators
     with ui.row().classes('gap-4 mt-2'):
-        status = ui.label('Status: Connected').classes('text-green-600')
-        last_sync = ui.label(f'Last sync: {datetime.now().strftime("%H:%M:%S")}')
-        user_count = ui.label(f'Active users: {len(ui.context.client.instances)}')
+        status = ui.label('🟢 Connected').classes('text-sm')
+        last_sync = ui.label(f'Synced: {datetime.now().strftime("%H:%M:%S")}').classes('text-sm')
     
-    def sync_from_server():
-        """Pull latest content from server"""
+    async def check_for_updates():
+        """Check for updates from other users"""
         try:
-            if textarea.value != documents[doc_id]['text']:
-                # Only update if content changed (avoid cursor jumps)
-                cursor_pos = textarea.value  # Store for cursor management
-                textarea.value = documents[doc_id]['text']
-                last_sync.text = f'Last sync: {datetime.now().strftime("%H:%M:%S")}'
+            # Skip if user is currently typing
+            if local_state['is_typing']:
+                return
+            
+            # Check if server version is newer
+            server_version = documents[doc_id]['version']
+            if server_version > local_state['version']:
+                server_text = documents[doc_id]['text']
+                server_hash = get_hash(server_text)
+                
+                # Only update if content actually changed
+                if server_hash != local_state['last_hash']:
+                    textarea.value = server_text
+                    local_state['version'] = server_version
+                    local_state['last_hash'] = server_hash
+                    last_sync.text = f'Synced: {datetime.now().strftime("%H:%M:%S")}'
+                    status.text = '🟢 Synced'
         except Exception as e:
-            status.text = f'Status: Error - {str(e)}'
-            status.classes(remove='text-green-600', add='text-red-600')
+            status.text = f'🔴 Error: {str(e)}'
     
-    def sync_to_server():
-        """Push local content to server"""
+    def on_change():
+        """When user types, save to server immediately"""
         try:
+            local_state['is_typing'] = True
+            
+            # Save to server
             documents[doc_id]['text'] = textarea.value
+            documents[doc_id]['version'] += 1
             documents[doc_id]['last_updated'] = datetime.now()
-            status.text = 'Status: Connected'
-            status.classes(remove='text-red-600', add='text-green-600')
+            
+            # Update local tracking
+            local_state['version'] = documents[doc_id]['version']
+            local_state['last_hash'] = get_hash(textarea.value)
+            
+            status.text = '🟡 Typing...'
+            
         except Exception as e:
-            status.text = f'Status: Error - {str(e)}'
-            status.classes(remove='text-green-600', add='text-red-600')
+            status.text = f'🔴 Error: {str(e)}'
     
-    def update_user_count():
-        """Update active user count"""
-        user_count.text = f'Active users: {len(ui.context.client.instances)}'
+    def on_blur():
+        """When user stops typing (loses focus)"""
+        local_state['is_typing'] = False
+        status.text = '🟢 Connected'
     
-    # Sync changes TO server when user types
-    textarea.on('update:model-value', sync_to_server)
+    # Set typing flag to false after short delay
+    async def reset_typing_flag():
+        """Reset typing flag after 500ms of no input"""
+        import asyncio
+        await asyncio.sleep(0.5)
+        local_state['is_typing'] = False
     
-    # Pull changes FROM server periodically (every 2 seconds)
-    ui.timer(2.0, sync_from_server)
+    def on_input():
+        """Called on every keystroke"""
+        on_change()
+        ui.timer(0.5, reset_typing_flag, once=True)
     
-    # Update user count periodically
-    ui.timer(3.0, update_user_count)
+    # Bind events
+    textarea.on('update:model-value', on_input)
+    textarea.on('blur', on_blur)
+    
+    # Check for updates from other users every 300ms
+    ui.timer(0.3, check_for_updates)
     
     # Instructions
     with ui.expansion('How to use', icon='info').classes('mt-4 max-w-3xl'):
@@ -70,13 +115,17 @@ def doc_room(doc_id: str):
         **Testing collaborative editing:**
         1. Share this URL with your teammates
         2. Everyone opens the same document URL
-        3. Start typing - changes sync every 2 seconds
-        4. You'll see the "Active users" counter update
+        3. Start typing - changes appear almost instantly
         
-        **Tips:**
-        - Changes save automatically as you type
-        - Refresh the page to see the latest content
-        - Use different document IDs for different files (e.g., `/docs/meeting-notes`)
+        **How it works:**
+        - Your changes save immediately as you type
+        - Updates from others appear when you pause typing (500ms)
+        - Last write wins (like Etherpad/simple collaborative editors)
+        
+        **Limitations:**
+        - If two people type at the exact same time, last save wins
+        - No cursor position syncing
+        - Best for taking turns or working on different sections
         ''')
 
 @ui.page('/')
