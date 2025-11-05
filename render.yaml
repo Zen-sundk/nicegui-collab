@@ -1,0 +1,6 @@
+services:
+     - type: web
+       name: nicegui-collab
+       runtime: python
+       buildCommand: pip install -r requirements.txt
+       startCommand: python nicegui_live_collab.py
