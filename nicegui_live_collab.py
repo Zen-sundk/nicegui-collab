@@ -8,12 +8,12 @@ import asyncio
 import tempfile
 from pathlib import Path
 from datetime import datetime
-from fastapi.responses import FileResponse  # ✅ added import
+from fastapi.responses import FileResponse
 
 # ============================================
 # SHARED DATA (in-memory, lost on restart)
 # ============================================
-documents = {}      # {doc_id: {'text': str, 'version': int, 'created': datetime, 'modified': datetime}}
+documents = {}      # {doc_id: {'text': str, 'version': int, 'created': datetime, 'modified': datetime, 'file_upload_version': int}}
 active_users = {}   # {doc_id: {user_id: timestamp}}
 
 # ============================================
@@ -50,7 +50,8 @@ async def doc_room(doc_id: str):
             'text': '', 
             'version': 0,
             'created': now,
-            'modified': now
+            'modified': now,
+            'file_upload_version': 0  # Track file uploads separately
         }
     if doc_id not in active_users:
         active_users[doc_id] = {}
@@ -65,6 +66,13 @@ async def doc_room(doc_id: str):
         ui.label(f'📄 Document: {doc_id}').classes('text-2xl font-bold')
         ui.button('← Tilbage til oversigt', on_click=lambda: ui.navigate.to('/')).props('flat')
     
+    # File upload notification banner (hidden by default)
+    with ui.row().classes('w-full bg-blue-100 border-2 border-blue-500 rounded p-3 mb-4 hidden') as upload_banner:
+        ui.icon('cloud_upload', size='sm').classes('text-blue-600')
+        upload_message = ui.label('').classes('flex-grow text-blue-900 font-semibold')
+        ui.button('🔄 Genindlæs for at se fil', on_click=lambda: ui.run_javascript('window.location.reload()')).props('color=primary')
+        ui.button('✕', on_click=lambda: upload_banner.set_visibility(False)).props('flat dense')
+    
     # Document info
     doc_info = ui.label().classes('text-sm text-gray-600 mb-2')
     
@@ -76,13 +84,13 @@ async def doc_room(doc_id: str):
     update_doc_info()
     
     # ============================================
-    # TEXTAREA (skal defineres før upload handler)
+    # TEXTAREA
     # ============================================
     textarea = ui.textarea('Live dokument (delt)', 
                           placeholder='Start typing...').props('outlined autogrow').classes('w-full')
     
     # ============================================
-    # STATE TRACKING (skal defineres før upload handler)
+    # STATE TRACKING
     # ============================================
     state = {
         'version': documents[doc_id]['version'],
@@ -90,14 +98,16 @@ async def doc_room(doc_id: str):
         'last_hash': get_hash(documents[doc_id]['text']),
         'pending_save': None,
         'local_text': documents[doc_id]['text'],
-        'skip_next_save': False  # Flag til at springe save over efter upload
+        'skip_next_save': False,
+        'file_upload_version': documents[doc_id]['file_upload_version'],  # Track file uploads
+        'upload_notified': False
     }
     
     # Set initial value
     textarea.value = state['local_text']
     
     # ============================================
-    # CORE FUNCTIONS (defineres før FILE OPERATIONS)
+    # CORE FUNCTIONS
     # ============================================
     def update_word_count():
         """Opdater ordtælling"""
@@ -124,9 +134,20 @@ async def doc_room(doc_id: str):
         print(f"[{user_id}] SAVE - Doc: {doc_id}, Version: {documents[doc_id]['version']}, Length: {len(textarea.value)}")
     
     def sync():
-        """Check for updates from others + update user count"""
+        """Check for updates from others + update user count + check for file uploads"""
         active_users[doc_id][user_id] = time.time()
         user_count.set_text(f'👥 Aktive brugere: {cleanup_inactive_users(doc_id)}')
+        
+        # Check if a file was uploaded by someone else
+        if documents[doc_id]['file_upload_version'] > state['file_upload_version']:
+            if not state['upload_notified']:
+                # Show notification banner
+                if 'last_upload' in documents[doc_id]:
+                    filename = documents[doc_id]['last_upload']['name']
+                    upload_message.set_text(f'📁 Ny fil uploadet: {filename}')
+                    upload_banner.set_visibility(True)
+                    state['upload_notified'] = True
+                    print(f"[{user_id}] FILE UPLOAD DETECTED - {filename}")
         
         if state['is_typing']:
             status.set_text('🟡 Skriver... (sync pause)')
@@ -171,7 +192,7 @@ async def doc_room(doc_id: str):
     # ============================================
     # FILE OPERATIONS ROW
     # ============================================
-    with ui.row().classes('gap-2 mb-4 w-full'):
+    with ui.row().classes('gap-2 mb-4 w-full') as file_ops_row:
         async def handle_upload(e: events.UploadEventArguments):
             try:
                 file = e.file
@@ -180,6 +201,8 @@ async def doc_room(doc_id: str):
                 await file.save(tmp_path)
                 size = tmp_path.stat().st_size
                 print(f"[{user_id}] UPLOAD - Saved file: {filename} ({size} bytes)")
+                
+                # Save file info and increment file upload version
                 documents[doc_id]['last_upload'] = {
                     'name': filename,
                     'path': str(tmp_path),
@@ -187,19 +210,25 @@ async def doc_room(doc_id: str):
                     'uploaded': datetime.now(),
                 }
                 documents[doc_id]['version'] += 1
+                documents[doc_id]['file_upload_version'] += 1  # Increment file upload counter
                 documents[doc_id]['modified'] = datetime.now()
+                
                 if state['pending_save']:
                     state['pending_save'].deactivate()
                     state['pending_save'] = None
+                
                 state['version'] = documents[doc_id]['version']
+                state['file_upload_version'] = documents[doc_id]['file_upload_version']
                 state['skip_next_save'] = True
+                
                 update_doc_info()
                 update_word_count()
                 status.set_text(f'✅ Fil uploadet: {filename}')
                 ui.notify(f'Fil uploadet: {filename} ({size} bytes)', color='positive')
-                print(f"[{user_id}] UPLOAD COMPLETE - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
-                # 🔄 Tell all clients to refresh
-                app.emit('reload', {'doc_id': doc_id})
+                print(f"[{user_id}] UPLOAD COMPLETE - Doc: {doc_id}, Version: {documents[doc_id]['version']}, File version: {documents[doc_id]['file_upload_version']}")
+                
+                # Auto-reload for the uploader
+                ui.run_javascript('window.location.reload()')
             except Exception as ex:
                 print(f"[{user_id}] UPLOAD ERROR: {ex}")
                 import traceback
@@ -212,13 +241,18 @@ async def doc_room(doc_id: str):
             auto_upload=True,
         ).props('accept=".txt,.md,.html,.py,.js,.json,.xml,.csv,.png,.jpg,.pdf"').classes('max-w-xs')
 
-        def show_uploaded_file():
+        # Show uploaded file link (if exists)
+        file_link_container = ui.row().classes('items-center')
+        
+        def update_file_display():
+            file_link_container.clear()
             if 'last_upload' in documents[doc_id]:
-                last = documents[doc_id]['last_upload']
-                link_text = f"📎 {last['name']} ({last['size']} bytes)"
-                ui.link(link_text, f"/download/{doc_id}/{last['name']}", new_tab=True).classes('text-blue-600 underline mt-1')
-
-        show_uploaded_file()
+                with file_link_container:
+                    last = documents[doc_id]['last_upload']
+                    link_text = f"📎 {last['name']} ({last['size']} bytes)"
+                    ui.link(link_text, f"/download/{doc_id}/{last['name']}", new_tab=True).classes('text-blue-600 underline')
+        
+        update_file_display()
 
         def download_doc():
             try:
@@ -248,6 +282,7 @@ async def doc_room(doc_id: str):
             update_word_count()
             ui.notify('🗑️ Dokument ryddet', color='warning')
             print(f"[{user_id}] CLEAR - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
+        
         ui.button('🗑️ Ryd alt', on_click=clear_doc).props('flat color=negative')
     
     with ui.row().classes('gap-4 mt-2'):
@@ -259,11 +294,6 @@ async def doc_room(doc_id: str):
     textarea.on('blur', on_blur)
     ui.timer(0.15, sync)
     update_word_count()
-     # 🔄 Lyt efter reload-signaler fra andre brugere
-    app.on('reload', lambda data: (
-        ui.run_javascript('window.location.reload()')
-        if data.get('doc_id') == doc_id else None
-    ))
 
 # ============================================
 # HOME PAGE
@@ -313,7 +343,7 @@ def download_file(doc_id: str, filename: str):
     file_path = Path(documents[doc_id]['last_upload']['path'])
     if not file_path.exists():
         return {'error': 'file not found on disk'}
-    return FileResponse(file_path, filename=filename)  # ✅ fixed response
+    return FileResponse(file_path, filename=filename)
 
 # ============================================
 # START SERVER
