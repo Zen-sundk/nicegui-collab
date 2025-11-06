@@ -188,8 +188,8 @@ async def doc_room(doc_id: str):
                 # Print for debugging
                 print(f"[{user_id}] UPLOAD EVENT - Attributes: {dir(e)}")
                 
-                # RETTET: Brug e.content.read() UDEN await
-                content = e.content.read()
+                # RETTET: Brug e.file.read() UDEN await
+                content = e.file.read()
                 
                 # Prøv forskellige encodings
                 text = None
