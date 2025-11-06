@@ -4,11 +4,12 @@ import hashlib
 import uuid
 import time
 import os
+from datetime import datetime
 
 # ============================================
 # SHARED DATA (in-memory, lost on restart)
 # ============================================
-documents = {}      # {doc_id: {'text': str, 'version': int}}
+documents = {}      # {doc_id: {'text': str, 'version': int, 'created': datetime, 'modified': datetime}}
 active_users = {}   # {doc_id: {user_id: timestamp}}
 
 # ============================================
@@ -27,6 +28,10 @@ def cleanup_inactive_users(doc_id):
                             if current_time - ts < 0.2}
     return len(active_users[doc_id])
 
+def format_datetime(dt):
+    """Format datetime til dansk format"""
+    return dt.strftime('%d-%m-%Y %H:%M:%S')
+
 # ============================================
 # DOCUMENT PAGE (the main collaboration page)
 # ============================================
@@ -36,7 +41,13 @@ async def doc_room(doc_id: str):
     
     # Initialize document if new
     if doc_id not in documents:
-        documents[doc_id] = {'text': '', 'version': 0}
+        now = datetime.now()
+        documents[doc_id] = {
+            'text': '', 
+            'version': 0,
+            'created': now,
+            'modified': now
+        }
     if doc_id not in active_users:
         active_users[doc_id] = {}
     
@@ -44,20 +55,108 @@ async def doc_room(doc_id: str):
     active_users[doc_id][user_id] = time.time()
     
     # ============================================
-    # UI ELEMENTS
+    # UI ELEMENTS - HEADER
     # ============================================
-    ui.label(f'Document: {doc_id}').classes('text-2xl font-bold mb-4')
+    with ui.row().classes('w-full justify-between items-center mb-4'):
+        ui.label(f'📄 Document: {doc_id}').classes('text-2xl font-bold')
+        ui.button('← Tilbage til oversigt', on_click=lambda: ui.navigate.to('/')).props('flat')
     
-    # Create a label to display the shared text (read-only view)
-    shared_display = ui.label().classes('hidden')
+    # Document info
+    doc_info = ui.label().classes('text-sm text-gray-600 mb-2')
     
-    # Create the editable textarea
-    textarea = ui.textarea('Live document (shared)', 
+    def update_doc_info():
+        created = format_datetime(documents[doc_id]['created'])
+        modified = format_datetime(documents[doc_id]['modified'])
+        doc_info.set_text(f'Oprettet: {created} | Sidst ændret: {modified} | Version: {documents[doc_id]["version"]}')
+    
+    update_doc_info()
+    
+    # ============================================
+    # FILE OPERATIONS ROW
+    # ============================================
+    with ui.row().classes('gap-2 mb-4 w-full'):
+        # Upload knap
+        def handle_upload(e):
+            """Håndter fil upload"""
+            try:
+                # Læs filindhold
+                content = e.content.read()
+                
+                # Prøv forskellige encodings
+                for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                    try:
+                        text = content.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                else:
+                    ui.notify('❌ Kunne ikke læse filen', color='negative')
+                    return
+                
+                # Opdater dokument
+                textarea.value = text
+                documents[doc_id]['text'] = text
+                documents[doc_id]['version'] += 1
+                documents[doc_id]['modified'] = datetime.now()
+                state['version'] = documents[doc_id]['version']
+                state['last_hash'] = get_hash(text)
+                state['local_text'] = text
+                
+                update_doc_info()
+                ui.notify(f'✅ Indlæste fil: {e.name}', color='positive')
+            except Exception as ex:
+                ui.notify(f'❌ Fejl ved upload: {str(ex)}', color='negative')
+        
+        upload = ui.upload(
+            label='📁 Upload fil',
+            on_upload=handle_upload,
+            auto_upload=True
+        ).props('accept=".txt,.md,.html,.py,.js,.json,.xml,.csv"').classes('max-w-xs')
+        
+        # Download knap
+        def download_doc():
+            """Download dokument som fil"""
+            try:
+                content = textarea.value or ''
+                filename = f'{doc_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
+                ui.download(
+                    content=content.encode('utf-8'),
+                    filename=filename
+                )
+                ui.notify(f'💾 Downloader: {filename}', color='positive')
+            except Exception as ex:
+                ui.notify(f'❌ Fejl ved download: {str(ex)}', color='negative')
+        
+        ui.button('💾 Download', on_click=download_doc).props('outlined')
+        
+        # Nyt dokument knap (clear)
+        def clear_doc():
+            """Ryd dokument"""
+            textarea.value = ''
+            documents[doc_id]['text'] = ''
+            documents[doc_id]['version'] += 1
+            documents[doc_id]['modified'] = datetime.now()
+            state['version'] = documents[doc_id]['version']
+            state['last_hash'] = get_hash('')
+            state['local_text'] = ''
+            update_doc_info()
+            ui.notify('🗑️ Dokument ryddet', color='warning')
+        
+        ui.button('🗑️ Ryd alt', on_click=clear_doc).props('flat color=negative')
+    
+    # ============================================
+    # TEXTAREA
+    # ============================================
+    textarea = ui.textarea('Live dokument (delt)', 
                           placeholder='Start typing...').props('outlined autogrow').classes('w-full')
     
+    # ============================================
+    # STATUS ROW
+    # ============================================
     with ui.row().classes('gap-4 mt-2'):
-        status = ui.label('🟢 Connected').classes('text-sm')
-        user_count = ui.label('👥 Active users: 1').classes('text-sm')
+        status = ui.label('🟢 Forbundet').classes('text-sm')
+        user_count = ui.label('👥 Aktive brugere: 1').classes('text-sm')
+        word_count = ui.label('📝 Ord: 0').classes('text-sm text-gray-600')
     
     # ============================================
     # STATE TRACKING
@@ -76,24 +175,34 @@ async def doc_room(doc_id: str):
     # ============================================
     # CORE FUNCTIONS
     # ============================================
+    def update_word_count():
+        """Opdater ordtælling"""
+        text = textarea.value or ''
+        words = len(text.split()) if text.strip() else 0
+        chars = len(text)
+        word_count.set_text(f'📝 Ord: {words} | Tegn: {chars}')
+    
     def save():
         """Save current text to server"""
         documents[doc_id]['text'] = textarea.value
         documents[doc_id]['version'] += 1
+        documents[doc_id]['modified'] = datetime.now()
         state['version'] = documents[doc_id]['version']
         state['last_hash'] = get_hash(textarea.value)
         state['local_text'] = textarea.value
-        status.text = '🟢 Connected'
+        status.text = '🟢 Forbundet'
+        update_doc_info()
+        update_word_count()
     
     def sync():
         """Check for updates from others + update user count"""
         # Update this user's presence
         active_users[doc_id][user_id] = time.time()
-        user_count.set_text(f'👥 Active users: {cleanup_inactive_users(doc_id)}')
+        user_count.set_text(f'👥 Aktive brugere: {cleanup_inactive_users(doc_id)}')
         
         # Don't pull updates while typing
         if state['is_typing']:
-            status.set_text('🟡 Typing... (sync paused)')
+            status.set_text('🟡 Skriver... (sync pause)')
             return
         
         # Pull updates if server has newer version
@@ -103,18 +212,21 @@ async def doc_room(doc_id: str):
             
             # Only update if different from what we have locally
             if server_text != textarea.value:
-                print(f"[{user_id}] Pulling update v{server_version}: {server_text[:50]}...")
+                print(f"[{user_id}] Henter opdatering v{server_version}: {server_text[:50]}...")
                 textarea.set_value(server_text)
                 state['version'] = server_version
                 state['last_hash'] = get_hash(server_text)
                 state['local_text'] = server_text
-                status.set_text('🟢 Synced from server')
+                status.set_text('🟢 Synkroniseret fra server')
+                update_doc_info()
+                update_word_count()
     
     def on_type():
         """Called every time user types a character"""
         state['is_typing'] = True
         state['local_text'] = textarea.value
-        status.set_text('🟡 Typing...')
+        status.set_text('🟡 Skriver...')
+        update_word_count()
         
         # Cancel previous save timer
         if state['pending_save']:
@@ -142,37 +254,71 @@ async def doc_room(doc_id: str):
     
     # Check for updates every 150ms
     ui.timer(0.15, sync)
+    
+    # Initial word count
+    update_word_count()
 
 # ============================================
 # HOME PAGE
 # ============================================
 @ui.page('/')
 def index():
-    ui.label('NiceGUI Collaborative Document Editor').classes('text-3xl font-bold mb-4')
-    ui.markdown('### Quick Start\nEnter a document name to create or join:')
+    ui.label('📝 NiceGUI Collaborative Document Editor').classes('text-3xl font-bold mb-4')
+    ui.markdown('### 🚀 Hurtig Start\nIntast et dokumentnavn for at oprette eller åbne:')
     
-    doc_input = ui.input('Document name', placeholder='e.g., meeting-notes').classes('w-full max-w-md').props('outlined')
+    doc_input = ui.input('Dokumentnavn', placeholder='f.eks. mødereferat').classes('w-full max-w-md').props('outlined')
     
     def open_doc():
         name = ''.join(c for c in (doc_input.value.strip() or 'default') if c.isalnum() or c in '-_')
         ui.navigate.to(f'/docs/{name}')
     
-    ui.button('Open Document', on_click=open_doc).classes('mt-2')
+    with ui.row().classes('gap-2'):
+        ui.button('📂 Åbn Dokument', on_click=open_doc).classes('mt-2')
+        ui.button('🔄 Opdater', on_click=lambda: ui.navigate.reload()).props('flat').classes('mt-2')
+    
     doc_input.on('keydown.enter', open_doc)
     
     # Show existing documents
     if documents:
-        ui.label('Existing documents:').classes('text-xl font-bold mt-8 mb-2')
-        for doc_id in documents.keys():
+        ui.label('📚 Eksisterende dokumenter:').classes('text-xl font-bold mt-8 mb-2')
+        
+        # Sort by modified date (newest first)
+        sorted_docs = sorted(
+            documents.items(), 
+            key=lambda x: x[1]['modified'], 
+            reverse=True
+        )
+        
+        for doc_id, doc_data in sorted_docs:
             with ui.card().classes('w-full max-w-md'):
                 with ui.row().classes('w-full justify-between items-center'):
-                    ui.label(doc_id).classes('font-mono')
+                    ui.label(doc_id).classes('font-mono font-bold')
                     count = cleanup_inactive_users(doc_id)
                     if count > 0:
                         ui.label(f'👥 {count}').classes('text-sm text-green-600 font-bold')
-                preview = documents[doc_id]['text'][:100] + ('...' if len(documents[doc_id]['text']) > 100 else '')
-                ui.label(preview or '(empty)').classes('text-gray-600 text-sm')
-                ui.button('Open', on_click=lambda d=doc_id: ui.navigate.to(f'/docs/{d}')).props('flat')
+                
+                # Document stats
+                word_count = len(doc_data['text'].split()) if doc_data['text'].strip() else 0
+                modified = format_datetime(doc_data['modified'])
+                ui.label(f'📝 {word_count} ord | 🕒 Ændret: {modified}').classes('text-xs text-gray-500 mt-1')
+                
+                # Preview
+                preview = doc_data['text'][:100] + ('...' if len(doc_data['text']) > 100 else '')
+                ui.label(preview or '(tomt dokument)').classes('text-gray-600 text-sm mt-2')
+                
+                # Actions
+                with ui.row().classes('gap-2 mt-2'):
+                    ui.button('📂 Åbn', on_click=lambda d=doc_id: ui.navigate.to(f'/docs/{d}')).props('flat color=primary')
+                    
+                    def download_from_home(doc_id=doc_id):
+                        content = documents[doc_id]['text']
+                        filename = f'{doc_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
+                        ui.download(content=content.encode('utf-8'), filename=filename)
+                        ui.notify(f'💾 Downloader: {filename}')
+                    
+                    ui.button('💾 Download', on_click=download_from_home).props('flat')
+    else:
+        ui.label('Ingen dokumenter endnu. Opret dit første dokument ovenfor! 👆').classes('text-gray-500 italic mt-4')
 
 # ============================================
 # START SERVER
