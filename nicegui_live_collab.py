@@ -187,8 +187,8 @@ async def doc_room(doc_id: str):
             try:
                 async def read_file():
                     try:
-                        # RETTET: Brug e.content.read() i stedet for e.sender.read()
-                        content = await e.content.read()
+                        # RETTET: Brug e.content.read() UDEN await - det er ikke async
+                        content = e.content.read()
                         
                         # Prøv forskellige encodings
                         text = None
