@@ -66,12 +66,13 @@ async def doc_room(doc_id: str):
         ui.label(f'📄 Document: {doc_id}').classes('text-2xl font-bold')
         ui.button('← Tilbage til oversigt', on_click=lambda: ui.navigate.to('/')).props('flat')
     
-    # File upload notification banner (hidden by default)
-    with ui.row().classes('w-full bg-blue-100 border-2 border-blue-500 rounded p-3 mb-4 hidden') as upload_banner:
+    # File upload notification banner (starts hidden, shows when file uploaded)
+    upload_banner = ui.row().classes('w-full bg-blue-100 border-2 border-blue-500 rounded p-3 mb-4').style('display: none;')
+    with upload_banner:
         ui.icon('cloud_upload', size='sm').classes('text-blue-600')
         upload_message = ui.label('').classes('flex-grow text-blue-900 font-semibold')
         ui.button('🔄 Genindlæs for at se fil', on_click=lambda: ui.run_javascript('window.location.reload()')).props('color=primary')
-        ui.button('✕', on_click=lambda: upload_banner.set_visibility(False)).props('flat dense')
+        ui.button('✕', on_click=lambda: upload_banner.style('display: none;')).props('flat dense')
     
     # Document info
     doc_info = ui.label().classes('text-sm text-gray-600 mb-2')
@@ -145,8 +146,9 @@ async def doc_room(doc_id: str):
                 if 'last_upload' in documents[doc_id]:
                     filename = documents[doc_id]['last_upload']['name']
                     upload_message.set_text(f'📁 Ny fil uploadet: {filename}')
-                    upload_banner.set_visibility(True)
+                    upload_banner.style('display: flex;')  # Show the banner
                     state['upload_notified'] = True
+                    ui.notify(f'📁 Ny fil uploadet: {filename}', color='info', position='top')
                     print(f"[{user_id}] FILE UPLOAD DETECTED - {filename}")
         
         if state['is_typing']:
