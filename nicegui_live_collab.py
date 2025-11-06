@@ -87,147 +87,14 @@ async def doc_room(doc_id: str):
         'last_hash': get_hash(documents[doc_id]['text']),
         'pending_save': None,
         'local_text': documents[doc_id]['text'],
-        'programmatic_update': False  # NY FLAG til at forhindre on_type trigger
+        'skip_next_save': False  # Flag til at springe save over efter upload
     }
     
     # Set initial value
     textarea.value = state['local_text']
     
     # ============================================
-    # FILE OPERATIONS ROW
-    # ============================================
-    with ui.row().classes('gap-2 mb-4 w-full'):
-        # Upload knap - FULDT RETTET VERSION
-        def handle_upload(e):
-            """Håndter fil upload"""
-            try:
-                async def read_file():
-                    try:
-                        content = await e.sender.read()
-                        
-                        # Prøv forskellige encodings
-                        for encoding in ['utf-8', 'latin-1', 'cp1252']:
-                            try:
-                                text = content.decode(encoding)
-                                break
-                            except UnicodeDecodeError:
-                                continue
-                        else:
-                            ui.notify('❌ Kunne ikke læse filen', color='negative')
-                            return
-                        
-                        # KRITISK: Sæt flag for at forhindre on_type() trigger
-                        state['programmatic_update'] = True
-                        
-                        # Annuller eventuel pending save
-                        if state['pending_save']:
-                            state['pending_save'].deactivate()
-                            state['pending_save'] = None
-                        
-                        # Opdater textarea (brug set_value for ikke at trigger events)
-                        textarea.set_value(text)
-                        
-                        # Gem direkte til server
-                        documents[doc_id]['text'] = text
-                        documents[doc_id]['version'] += 1
-                        documents[doc_id]['modified'] = datetime.now()
-                        
-                        # Opdater lokal state
-                        state['version'] = documents[doc_id]['version']
-                        state['last_hash'] = get_hash(text)
-                        state['local_text'] = text
-                        state['is_typing'] = False
-                        
-                        # Reset flag
-                        state['programmatic_update'] = False
-                        
-                        # Opdater UI
-                        update_doc_info()
-                        update_word_count()
-                        
-                        ui.notify(f'✅ Indlæste fil: {e.name} ({len(text)} tegn)', color='positive')
-                        print(f"[{user_id}] UPLOAD SUCCESS - Doc: {doc_id}, Version: {documents[doc_id]['version']}, Length: {len(text)}")
-                        
-                    except Exception as inner_ex:
-                        state['programmatic_update'] = False
-                        ui.notify(f'❌ Fejl ved filindlæsning: {str(inner_ex)}', color='negative')
-                        print(f"[{user_id}] UPLOAD ERROR: {inner_ex}")
-                        import traceback
-                        traceback.print_exc()
-                
-                asyncio.create_task(read_file())
-                
-            except Exception as ex:
-                state['programmatic_update'] = False
-                ui.notify(f'❌ Fejl ved upload: {str(ex)}', color='negative')
-                print(f"[{user_id}] UPLOAD ERROR (outer): {ex}")
-        
-        upload = ui.upload(
-            label='📁 Upload fil',
-            on_upload=handle_upload,
-            auto_upload=True
-        ).props('accept=".txt,.md,.html,.py,.js,.json,.xml,.csv"').classes('max-w-xs')
-        
-        # Download knap
-        def download_doc():
-            """Download dokument som fil"""
-            try:
-                content = textarea.value or ''
-                filename = f'{doc_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
-                ui.download(
-                    content=content.encode('utf-8'),
-                    filename=filename
-                )
-                ui.notify(f'💾 Downloader: {filename}', color='positive')
-            except Exception as ex:
-                ui.notify(f'❌ Fejl ved download: {str(ex)}', color='negative')
-        
-        ui.button('💾 Download', on_click=download_doc).props('outlined')
-        
-        # Nyt dokument knap (clear)
-        def clear_doc():
-            """Ryd dokument"""
-            # Sæt flag for at forhindre on_type trigger
-            state['programmatic_update'] = True
-            
-            # Annuller pending save
-            if state['pending_save']:
-                state['pending_save'].deactivate()
-                state['pending_save'] = None
-            
-            # Opdater textarea
-            textarea.set_value('')
-            
-            # Gem til server
-            documents[doc_id]['text'] = ''
-            documents[doc_id]['version'] += 1
-            documents[doc_id]['modified'] = datetime.now()
-            
-            # Opdater state
-            state['version'] = documents[doc_id]['version']
-            state['last_hash'] = get_hash('')
-            state['local_text'] = ''
-            state['is_typing'] = False
-            state['programmatic_update'] = False
-            
-            # Opdater UI
-            update_doc_info()
-            update_word_count()
-            ui.notify('🗑️ Dokument ryddet', color='warning')
-            print(f"[{user_id}] CLEAR - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
-        
-        ui.button('🗑️ Ryd alt', on_click=clear_doc).props('flat color=negative')
-    
-    # ============================================
-    # STATUS ROW
-    # ============================================
-    with ui.row().classes('gap-4 mt-2'):
-        status = ui.label('🟢 Forbundet').classes('text-sm')
-        user_count = ui.label('👥 Aktive brugere: 1').classes('text-sm')
-        word_count = ui.label('📝 Ord: 0').classes('text-sm text-gray-600')
-    
-    # ============================================
-    # CORE FUNCTIONS
+    # CORE FUNCTIONS (defineres før FILE OPERATIONS)
     # ============================================
     def update_word_count():
         """Opdater ordtælling"""
@@ -238,6 +105,11 @@ async def doc_room(doc_id: str):
     
     def save():
         """Save current text to server"""
+        # Skip hvis vi lige har uploaded
+        if state['skip_next_save']:
+            state['skip_next_save'] = False
+            return
+            
         documents[doc_id]['text'] = textarea.value
         documents[doc_id]['version'] += 1
         documents[doc_id]['modified'] = datetime.now()
@@ -269,24 +141,19 @@ async def doc_room(doc_id: str):
             if server_text != textarea.value:
                 print(f"[{user_id}] SYNC PULLING - Local v{state['version']} → Server v{server_version}, Length: {len(server_text)}")
                 
-                # Sæt flag for at forhindre on_type trigger
-                state['programmatic_update'] = True
-                textarea.set_value(server_text)
-                state['programmatic_update'] = False
+                # Opdater textarea direkte
+                textarea.value = server_text
                 
                 state['version'] = server_version
                 state['last_hash'] = get_hash(server_text)
                 state['local_text'] = server_text
+                state['skip_next_save'] = True  # Skip næste save
                 status.set_text('🟢 Synkroniseret fra server')
                 update_doc_info()
                 update_word_count()
     
     def on_type():
         """Called every time user types a character"""
-        # Ignorer hvis det er en programmatisk opdatering
-        if state['programmatic_update']:
-            return
-        
         state['is_typing'] = True
         state['local_text'] = textarea.value
         status.set_text('🟡 Skriver...')
@@ -305,14 +172,137 @@ async def doc_room(doc_id: str):
     
     def on_blur():
         """When textarea loses focus, save immediately"""
-        # Ignorer hvis det er en programmatisk opdatering
-        if state['programmatic_update']:
-            return
-            
         if state['pending_save']:
             state['pending_save'].deactivate()
         save()
         state['is_typing'] = False
+    
+    # ============================================
+    # FILE OPERATIONS ROW
+    # ============================================
+    with ui.row().classes('gap-2 mb-4 w-full'):
+        # Upload knap - SIMPLERE OG MERE ROBUST VERSION
+        def handle_upload(e):
+            """Håndter fil upload"""
+            try:
+                async def read_file():
+                    try:
+                        content = await e.sender.read()
+                        
+                        # Prøv forskellige encodings
+                        for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                            try:
+                                text = content.decode(encoding)
+                                break
+                            except UnicodeDecodeError:
+                                continue
+                        else:
+                            ui.notify('❌ Kunne ikke læse filen', color='negative')
+                            return
+                        
+                        print(f"[{user_id}] UPLOAD START - Length: {len(text)}")
+                        
+                        # 1. FØRST: Gem til server (MEGET VIGTIGT!)
+                        documents[doc_id]['text'] = text
+                        documents[doc_id]['version'] += 1
+                        documents[doc_id]['modified'] = datetime.now()
+                        
+                        print(f"[{user_id}] UPLOAD - Saved to server. Version: {documents[doc_id]['version']}")
+                        
+                        # 2. Annuller eventuel pending save
+                        if state['pending_save']:
+                            state['pending_save'].deactivate()
+                            state['pending_save'] = None
+                        
+                        # 3. Opdater textarea direkte
+                        textarea.value = text
+                        
+                        # 4. Opdater lokal state
+                        state['version'] = documents[doc_id]['version']
+                        state['last_hash'] = get_hash(text)
+                        state['local_text'] = text
+                        state['is_typing'] = False
+                        state['skip_next_save'] = True  # Skip næste auto-save
+                        
+                        # 5. Opdater UI
+                        update_doc_info()
+                        update_word_count()
+                        
+                        ui.notify(f'✅ Indlæste fil: {e.name} ({len(text)} tegn)', color='positive')
+                        print(f"[{user_id}] UPLOAD COMPLETE - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
+                        
+                    except Exception as inner_ex:
+                        ui.notify(f'❌ Fejl ved filindlæsning: {str(inner_ex)}', color='negative')
+                        print(f"[{user_id}] UPLOAD ERROR: {inner_ex}")
+                        import traceback
+                        traceback.print_exc()
+                
+                asyncio.create_task(read_file())
+                
+            except Exception as ex:
+                ui.notify(f'❌ Fejl ved upload: {str(ex)}', color='negative')
+                print(f"[{user_id}] UPLOAD ERROR (outer): {ex}")
+        
+        upload = ui.upload(
+            label='📁 Upload fil',
+            on_upload=handle_upload,
+            auto_upload=True
+        ).props('accept=".txt,.md,.html,.py,.js,.json,.xml,.csv"').classes('max-w-xs')
+        
+        # Download knap
+        def download_doc():
+            """Download dokument som fil"""
+            try:
+                content = textarea.value or ''
+                filename = f'{doc_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
+                ui.download(
+                    content=content.encode('utf-8'),
+                    filename=filename
+                )
+                ui.notify(f'💾 Downloader: {filename}', color='positive')
+            except Exception as ex:
+                ui.notify(f'❌ Fejl ved download: {str(ex)}', color='negative')
+        
+        ui.button('💾 Download', on_click=download_doc).props('outlined')
+        
+        # Nyt dokument knap (clear)
+        def clear_doc():
+            """Ryd dokument"""
+            # Annuller pending save
+            if state['pending_save']:
+                state['pending_save'].deactivate()
+                state['pending_save'] = None
+            
+            # Gem til server FØRST
+            documents[doc_id]['text'] = ''
+            documents[doc_id]['version'] += 1
+            documents[doc_id]['modified'] = datetime.now()
+            
+            # Opdater textarea
+            textarea.value = ''
+            
+            # Opdater state
+            state['version'] = documents[doc_id]['version']
+            state['last_hash'] = get_hash('')
+            state['local_text'] = ''
+            state['is_typing'] = False
+            state['skip_next_save'] = True
+            
+            # Opdater UI
+            update_doc_info()
+            update_word_count()
+            ui.notify('🗑️ Dokument ryddet', color='warning')
+            print(f"[{user_id}] CLEAR - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
+        
+        ui.button('🗑️ Ryd alt', on_click=clear_doc).props('flat color=negative')
+    
+    # ============================================
+    # STATUS ROW
+    # ============================================
+    with ui.row().classes('gap-4 mt-2'):
+        status = ui.label('🟢 Forbundet').classes('text-sm')
+        user_count = ui.label('👥 Aktive brugere: 1').classes('text-sm')
+        word_count = ui.label('📝 Ord: 0').classes('text-sm text-gray-600')
     
     # ============================================
     # EVENT BINDINGS
