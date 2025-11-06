@@ -8,6 +8,7 @@ import asyncio
 import tempfile
 from pathlib import Path
 from datetime import datetime
+from fastapi.responses import FileResponse  # ✅ added import
 
 # ============================================
 # SHARED DATA (in-memory, lost on restart)
@@ -107,7 +108,6 @@ async def doc_room(doc_id: str):
     
     def save():
         """Save current text to server"""
-        # Skip hvis vi lige har uploaded
         if state['skip_next_save']:
             state['skip_next_save'] = False
             return
@@ -125,47 +125,37 @@ async def doc_room(doc_id: str):
     
     def sync():
         """Check for updates from others + update user count"""
-        # Update this user's presence
         active_users[doc_id][user_id] = time.time()
         user_count.set_text(f'👥 Aktive brugere: {cleanup_inactive_users(doc_id)}')
         
-        # Don't pull updates while typing
         if state['is_typing']:
             status.set_text('🟡 Skriver... (sync pause)')
             return
         
-        # Pull updates if server has newer version
         server_version = documents[doc_id]['version']
         if server_version > state['version']:
             server_text = documents[doc_id]['text']
             
-            # Only update if different from what we have locally
             if server_text != textarea.value:
                 print(f"[{user_id}] SYNC PULLING - Local v{state['version']} → Server v{server_version}, Length: {len(server_text)}")
-                
-                # Opdater textarea direkte
                 textarea.value = server_text
-                
                 state['version'] = server_version
                 state['last_hash'] = get_hash(server_text)
                 state['local_text'] = server_text
-                state['skip_next_save'] = True  # Skip næste save
+                state['skip_next_save'] = True
                 status.set_text('🟢 Synkroniseret fra server')
                 update_doc_info()
                 update_word_count()
     
     def on_type():
-        """Called every time user types a character"""
         state['is_typing'] = True
         state['local_text'] = textarea.value
         status.set_text('🟡 Skriver...')
         update_word_count()
         
-        # Cancel previous save timer
         if state['pending_save']:
             state['pending_save'].deactivate()
         
-        # Save 200ms after user stops typing
         def finish_typing():
             save()
             state['is_typing'] = False
@@ -173,7 +163,6 @@ async def doc_room(doc_id: str):
         state['pending_save'] = ui.timer(0.2, finish_typing, once=True)
     
     def on_blur():
-        """When textarea loses focus, save immediately"""
         if state['pending_save']:
             state['pending_save'].deactivate()
         save()
@@ -183,20 +172,14 @@ async def doc_room(doc_id: str):
     # FILE OPERATIONS ROW
     # ============================================
     with ui.row().classes('gap-2 mb-4 w-full'):
-        # Upload knap - RETTET VERSION MED EVENTS
         async def handle_upload(e: events.UploadEventArguments):
-            """Håndter upload af fil og synkroniser med andre brugere"""
             try:
                 file = e.file
                 filename = file.name
                 tmp_path = Path(tempfile.gettempdir()) / filename
-
-                # Gem filen til midlertidig mappe
                 await file.save(tmp_path)
                 size = tmp_path.stat().st_size
                 print(f"[{user_id}] UPLOAD - Saved file: {filename} ({size} bytes)")
-
-                # Opdater dokumentdata (inkl. filmetadata)
                 documents[doc_id]['last_upload'] = {
                     'name': filename,
                     'path': str(tmp_path),
@@ -205,24 +188,17 @@ async def doc_room(doc_id: str):
                 }
                 documents[doc_id]['version'] += 1
                 documents[doc_id]['modified'] = datetime.now()
-
-                # Fjern eventuel pending save
                 if state['pending_save']:
                     state['pending_save'].deactivate()
                     state['pending_save'] = None
-
-                # Opdater state
                 state['version'] = documents[doc_id]['version']
                 state['skip_next_save'] = True
-
-                # Opdater UI
                 update_doc_info()
                 update_word_count()
                 status.set_text(f'✅ Fil uploadet: {filename}')
                 ui.notify(f'Fil uploadet: {filename} ({size} bytes)', color='positive')
-
                 print(f"[{user_id}] UPLOAD COMPLETE - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
-
+                ui.run_javascript('window.location.reload()')  # ✅ ensures all clients refresh
             except Exception as ex:
                 print(f"[{user_id}] UPLOAD ERROR: {ex}")
                 import traceback
@@ -235,11 +211,7 @@ async def doc_room(doc_id: str):
             auto_upload=True,
         ).props('accept=".txt,.md,.html,.py,.js,.json,.xml,.csv,.png,.jpg,.pdf"').classes('max-w-xs')
 
-        # ============================================
-        # 🔗 VIS SIDST UPLOADEDE FIL (HVIS NOGEN)
-        # ============================================
         def show_uploaded_file():
-            """Vis link til sidst uploadede fil"""
             if 'last_upload' in documents[doc_id]:
                 last = documents[doc_id]['last_upload']
                 link_text = f"📎 {last['name']} ({last['size']} bytes)"
@@ -247,11 +219,7 @@ async def doc_room(doc_id: str):
 
         show_uploaded_file()
 
-        # ============================================
-        # 💾 DOWNLOAD-KNAP
-        # ============================================
         def download_doc():
-            """Download dokument som fil"""
             try:
                 content = textarea.value or ''
                 filename = f'{doc_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
@@ -262,51 +230,33 @@ async def doc_room(doc_id: str):
 
         ui.button('💾 Download', on_click=download_doc).props('outlined')
 
-        # ============================================
-        # 🗑️ RYD ALT-KNAP
-        # ============================================
         def clear_doc():
-            """Ryd dokumentets tekst"""
             if state['pending_save']:
                 state['pending_save'].deactivate()
                 state['pending_save'] = None
-
             documents[doc_id]['text'] = ''
             documents[doc_id]['version'] += 1
             documents[doc_id]['modified'] = datetime.now()
-
             textarea.value = ''
             state['version'] = documents[doc_id]['version']
             state['last_hash'] = get_hash('')
             state['local_text'] = ''
             state['is_typing'] = False
             state['skip_next_save'] = True
-
             update_doc_info()
             update_word_count()
             ui.notify('🗑️ Dokument ryddet', color='warning')
             print(f"[{user_id}] CLEAR - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
-
         ui.button('🗑️ Ryd alt', on_click=clear_doc).props('flat color=negative')
     
-    # ============================================
-    # STATUS ROW
-    # ============================================
     with ui.row().classes('gap-4 mt-2'):
         status = ui.label('🟢 Forbundet').classes('text-sm')
         user_count = ui.label('👥 Aktive brugere: 1').classes('text-sm')
         word_count = ui.label('📝 Ord: 0').classes('text-sm text-gray-600')
     
-    # ============================================
-    # EVENT BINDINGS
-    # ============================================
     textarea.on('update:model-value', on_type)
     textarea.on('blur', on_blur)
-    
-    # Check for updates every 150ms
     ui.timer(0.15, sync)
-    
-    # Initial word count
     update_word_count()
 
 # ============================================
@@ -316,30 +266,17 @@ async def doc_room(doc_id: str):
 def index():
     ui.label('📝 NiceGUI Collaborative Document Editor').classes('text-3xl font-bold mb-4')
     ui.markdown('### 🚀 Hurtig Start\nIntast et dokumentnavn for at oprette eller åbne:')
-    
     doc_input = ui.input('Dokumentnavn', placeholder='f.eks. mødereferat').classes('w-full max-w-md').props('outlined')
-    
     def open_doc():
         name = ''.join(c for c in (doc_input.value.strip() or 'default') if c.isalnum() or c in '-_')
         ui.navigate.to(f'/docs/{name}')
-    
     with ui.row().classes('gap-2'):
         ui.button('📂 Åbn Dokument', on_click=open_doc).classes('mt-2')
         ui.button('🔄 Opdater', on_click=lambda: ui.navigate.reload()).props('flat').classes('mt-2')
-    
     doc_input.on('keydown.enter', open_doc)
-    
-    # Show existing documents
     if documents:
         ui.label('📚 Eksisterende dokumenter:').classes('text-xl font-bold mt-8 mb-2')
-        
-        # Sort by modified date (newest first)
-        sorted_docs = sorted(
-            documents.items(), 
-            key=lambda x: x[1]['modified'], 
-            reverse=True
-        )
-        
+        sorted_docs = sorted(documents.items(), key=lambda x: x[1]['modified'], reverse=True)
         for doc_id, doc_data in sorted_docs:
             with ui.card().classes('w-full max-w-md'):
                 with ui.row().classes('w-full justify-between items-center'):
@@ -347,40 +284,30 @@ def index():
                     count = cleanup_inactive_users(doc_id)
                     if count > 0:
                         ui.label(f'👥 {count}').classes('text-sm text-green-600 font-bold')
-                
-                # Document stats
                 word_count = len(doc_data['text'].split()) if doc_data['text'].strip() else 0
                 modified = format_datetime(doc_data['modified'])
                 ui.label(f'📝 {word_count} ord | 🕒 Ændret: {modified}').classes('text-xs text-gray-500 mt-1')
-                
-                # Preview
                 preview = doc_data['text'][:100] + ('...' if len(doc_data['text']) > 100 else '')
                 ui.label(preview or '(tomt dokument)').classes('text-gray-600 text-sm mt-2')
-                
-                # Actions
                 with ui.row().classes('gap-2 mt-2'):
                     ui.button('📂 Åbn', on_click=lambda d=doc_id: ui.navigate.to(f'/docs/{d}')).props('flat color=primary')
-                    
                     def download_from_home(doc_id=doc_id):
                         content = documents[doc_id]['text']
                         filename = f'{doc_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
                         ui.download(content=content.encode('utf-8'), filename=filename)
                         ui.notify(f'💾 Downloader: {filename}')
-                    
                     ui.button('💾 Download', on_click=download_from_home).props('flat')
     else:
         ui.label('Ingen dokumenter endnu. Opret dit første dokument ovenfor! 👆').classes('text-gray-500 italic mt-4')
 
 @app.get('/download/{doc_id}/{filename}')
 def download_file(doc_id: str, filename: str):
-    """Gør det muligt at downloade sidst uploadede fil"""
     if doc_id not in documents or 'last_upload' not in documents[doc_id]:
         return {'error': 'file not found'}
     file_path = Path(documents[doc_id]['last_upload']['path'])
     if not file_path.exists():
         return {'error': 'file not found on disk'}
-    return app.response.file(file_path, filename=filename)
-
+    return FileResponse(file_path, filename=filename)  # ✅ fixed response
 
 # ============================================
 # START SERVER
