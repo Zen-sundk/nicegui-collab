@@ -5,6 +5,8 @@ import uuid
 import time
 import os
 import asyncio
+import tempfile
+from pathlib import Path
 from datetime import datetime
 
 # ============================================
@@ -181,43 +183,43 @@ async def doc_room(doc_id: str):
     # FILE OPERATIONS ROW
     # ============================================
     with ui.row().classes('gap-2 mb-4 w-full'):
-        # Upload knap - KORRIGERET VERSION (NiceGUI 3.x kompatibel)
+        # Upload knap - RETTET VERSION MED EVENTS
         async def handle_upload(e: events.UploadEventArguments):
-            """Håndter fil upload - Async og korrekt brug af e.file"""
+            """Håndter upload af fil og synkroniser med andre brugere"""
             try:
-                print(f"[{user_id}] UPLOAD EVENT - File: {e.file.name}, Type: {e.file.content_type}")
+                file = e.file
+                filename = file.name
+                tmp_path = Path(tempfile.gettempdir()) / filename
 
-                # Læs filens indhold som tekst (NiceGUI håndterer encoding automatisk)
-                text = await e.file.text()
+                # Gem filen til midlertidig mappe
+                await file.save(tmp_path)
+                size = tmp_path.stat().st_size
+                print(f"[{user_id}] UPLOAD - Saved file: {filename} ({size} bytes)")
 
-                print(f"[{user_id}] UPLOAD START - Length: {len(text)}, File: {e.file.name}")
+                # Opdater dokumentdata (inkl. filmetadata)
+                documents[doc_id]['last_upload'] = {
+                    'name': filename,
+                    'path': str(tmp_path),
+                    'size': size,
+                    'uploaded': datetime.now(),
+                }
+                documents[doc_id]['version'] += 1
+                documents[doc_id]['modified'] = datetime.now()
 
-                # 1. Annuller eventuel pending save FØRST
+                # Fjern eventuel pending save
                 if state['pending_save']:
                     state['pending_save'].deactivate()
                     state['pending_save'] = None
 
-                # 2. Gem til server
-                documents[doc_id]['text'] = text
-                documents[doc_id]['version'] += 1
-                documents[doc_id]['modified'] = datetime.now()
-
-                print(f"[{user_id}] UPLOAD - Saved to server. Version: {documents[doc_id]['version']}")
-
-                # 3. Opdater textarea direkte
-                textarea.value = text
-
-                # 4. Opdater lokal state
+                # Opdater state
                 state['version'] = documents[doc_id]['version']
-                state['last_hash'] = get_hash(text)
-                state['local_text'] = text
-                state['is_typing'] = False
                 state['skip_next_save'] = True
 
-                # 5. Opdater UI
+                # Opdater UI
                 update_doc_info()
                 update_word_count()
-                status.set_text(f'✅ Fil uploadet: {e.file.name}')
+                status.set_text(f'✅ Fil uploadet: {filename}')
+                ui.notify(f'Fil uploadet: {filename} ({size} bytes)', color='positive')
 
                 print(f"[{user_id}] UPLOAD COMPLETE - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
 
@@ -231,9 +233,23 @@ async def doc_room(doc_id: str):
             label='📁 Upload fil',
             on_upload=handle_upload,
             auto_upload=True,
-        ).props('accept=".txt,.md,.html,.py,.js,.json,.xml,.csv"').classes('max-w-xs')
+        ).props('accept=".txt,.md,.html,.py,.js,.json,.xml,.csv,.png,.jpg,.pdf"').classes('max-w-xs')
 
-        # Download knap
+        # ============================================
+        # 🔗 VIS SIDST UPLOADEDE FIL (HVIS NOGEN)
+        # ============================================
+        def show_uploaded_file():
+            """Vis link til sidst uploadede fil"""
+            if 'last_upload' in documents[doc_id]:
+                last = documents[doc_id]['last_upload']
+                link_text = f"📎 {last['name']} ({last['size']} bytes)"
+                ui.link(link_text, f"/download/{doc_id}/{last['name']}", new_tab=True).classes('text-blue-600 underline mt-1')
+
+        show_uploaded_file()
+
+        # ============================================
+        # 💾 DOWNLOAD-KNAP
+        # ============================================
         def download_doc():
             """Download dokument som fil"""
             try:
@@ -246,14 +262,15 @@ async def doc_room(doc_id: str):
 
         ui.button('💾 Download', on_click=download_doc).props('outlined')
 
-        # Nyt dokument knap (clear)
+        # ============================================
+        # 🗑️ RYD ALT-KNAP
+        # ============================================
         def clear_doc():
-            """Ryd dokument"""
+            """Ryd dokumentets tekst"""
             if state['pending_save']:
                 state['pending_save'].deactivate()
                 state['pending_save'] = None
 
-            # Ryd dokument og opdater version
             documents[doc_id]['text'] = ''
             documents[doc_id]['version'] += 1
             documents[doc_id]['modified'] = datetime.now()
@@ -271,7 +288,7 @@ async def doc_room(doc_id: str):
             print(f"[{user_id}] CLEAR - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
 
         ui.button('🗑️ Ryd alt', on_click=clear_doc).props('flat color=negative')
-
+    
     # ============================================
     # STATUS ROW
     # ============================================
@@ -353,6 +370,17 @@ def index():
                     ui.button('💾 Download', on_click=download_from_home).props('flat')
     else:
         ui.label('Ingen dokumenter endnu. Opret dit første dokument ovenfor! 👆').classes('text-gray-500 italic mt-4')
+
+@app.get('/download/{doc_id}/{filename}')
+def download_file(doc_id: str, filename: str):
+    """Gør det muligt at downloade sidst uploadede fil"""
+    if doc_id not in documents or 'last_upload' not in documents[doc_id]:
+        return {'error': 'file not found'}
+    file_path = Path(documents[doc_id]['last_upload']['path'])
+    if not file_path.exists():
+        return {'error': 'file not found on disk'}
+    return app.response.file(file_path, filename=filename)
+
 
 # ============================================
 # START SERVER
