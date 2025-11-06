@@ -181,120 +181,97 @@ async def doc_room(doc_id: str):
     # FILE OPERATIONS ROW
     # ============================================
     with ui.row().classes('gap-2 mb-4 w-full'):
-        # Upload knap - RETTET VERSION MED EVENTS
-        def handle_upload(e: events.UploadEventArguments):
-            """Håndter fil upload - FIXED VERSION"""
+        # Upload knap - KORRIGERET VERSION (NiceGUI 3.x kompatibel)
+        async def handle_upload(e: events.UploadEventArguments):
+            """Håndter fil upload - Async og korrekt brug af e.file"""
             try:
-                # Print for debugging
-                print(f"[{user_id}] UPLOAD EVENT - Attributes: {dir(e)}")
-                
-                # RETTET: Brug e.file.read() UDEN await
-                content = e.file.read()
-                
-                # Prøv forskellige encodings
-                text = None
-                for encoding in ['utf-8', 'latin-1', 'cp1252']:
-                    try:
-                        text = content.decode(encoding)
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                
-                if text is None:
-                    print(f"[{user_id}] UPLOAD ERROR: Kunne ikke læse filen")
-                    status.set_text('❌ Kunne ikke læse filen')
-                    return
-                
-                print(f"[{user_id}] UPLOAD START - Length: {len(text)}, File: {e.name}")
-                
+                print(f"[{user_id}] UPLOAD EVENT - File: {e.file.name}, Type: {e.file.content_type}")
+
+                # Læs filens indhold som tekst (NiceGUI håndterer encoding automatisk)
+                text = await e.file.text()
+
+                print(f"[{user_id}] UPLOAD START - Length: {len(text)}, File: {e.file.name}")
+
                 # 1. Annuller eventuel pending save FØRST
                 if state['pending_save']:
                     state['pending_save'].deactivate()
                     state['pending_save'] = None
-                
+
                 # 2. Gem til server
                 documents[doc_id]['text'] = text
                 documents[doc_id]['version'] += 1
                 documents[doc_id]['modified'] = datetime.now()
-                
+
                 print(f"[{user_id}] UPLOAD - Saved to server. Version: {documents[doc_id]['version']}")
-                
+
                 # 3. Opdater textarea direkte
                 textarea.value = text
-                
+
                 # 4. Opdater lokal state
                 state['version'] = documents[doc_id]['version']
                 state['last_hash'] = get_hash(text)
                 state['local_text'] = text
                 state['is_typing'] = False
                 state['skip_next_save'] = True
-                
+
                 # 5. Opdater UI
                 update_doc_info()
                 update_word_count()
-                status.set_text(f'✅ Fil uploadet: {e.name}')
-                
+                status.set_text(f'✅ Fil uploadet: {e.file.name}')
+
                 print(f"[{user_id}] UPLOAD COMPLETE - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
-                    
+
             except Exception as ex:
                 print(f"[{user_id}] UPLOAD ERROR: {ex}")
                 import traceback
                 traceback.print_exc()
                 status.set_text('❌ Upload fejlede')
-        
+
         upload = ui.upload(
             label='📁 Upload fil',
             on_upload=handle_upload,
-            auto_upload=True
+            auto_upload=True,
         ).props('accept=".txt,.md,.html,.py,.js,.json,.xml,.csv"').classes('max-w-xs')
-        
+
         # Download knap
         def download_doc():
             """Download dokument som fil"""
             try:
                 content = textarea.value or ''
                 filename = f'{doc_id}_{datetime.now().strftime("%Y%m%d_%H%M%S")}.txt'
-                ui.download(
-                    content=content.encode('utf-8'),
-                    filename=filename
-                )
+                ui.download(content=content.encode('utf-8'), filename=filename)
                 ui.notify(f'💾 Downloader: {filename}', color='positive')
             except Exception as ex:
                 ui.notify(f'❌ Fejl ved download: {str(ex)}', color='negative')
-        
+
         ui.button('💾 Download', on_click=download_doc).props('outlined')
-        
+
         # Nyt dokument knap (clear)
         def clear_doc():
             """Ryd dokument"""
-            # Annuller pending save
             if state['pending_save']:
                 state['pending_save'].deactivate()
                 state['pending_save'] = None
-            
-            # Gem til server FØRST
+
+            # Ryd dokument og opdater version
             documents[doc_id]['text'] = ''
             documents[doc_id]['version'] += 1
             documents[doc_id]['modified'] = datetime.now()
-            
-            # Opdater textarea
+
             textarea.value = ''
-            
-            # Opdater state
             state['version'] = documents[doc_id]['version']
             state['last_hash'] = get_hash('')
             state['local_text'] = ''
             state['is_typing'] = False
             state['skip_next_save'] = True
-            
-            # Opdater UI
+
             update_doc_info()
             update_word_count()
             ui.notify('🗑️ Dokument ryddet', color='warning')
             print(f"[{user_id}] CLEAR - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
-        
+
         ui.button('🗑️ Ryd alt', on_click=clear_doc).props('flat color=negative')
-    
+
     # ============================================
     # STATUS ROW
     # ============================================
