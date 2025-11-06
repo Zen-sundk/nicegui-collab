@@ -86,7 +86,8 @@ async def doc_room(doc_id: str):
         'is_typing': False,
         'last_hash': get_hash(documents[doc_id]['text']),
         'pending_save': None,
-        'local_text': documents[doc_id]['text']
+        'local_text': documents[doc_id]['text'],
+        'programmatic_update': False  # NY FLAG til at forhindre on_type trigger
     }
     
     # Set initial value
@@ -96,40 +97,70 @@ async def doc_room(doc_id: str):
     # FILE OPERATIONS ROW
     # ============================================
     with ui.row().classes('gap-2 mb-4 w-full'):
-        # Upload knap - RETTET VERSION
+        # Upload knap - FULDT RETTET VERSION
         def handle_upload(e):
             """Håndter fil upload"""
             try:
                 async def read_file():
-                    content = await e.sender.read()
-                    
-                    # Prøv forskellige encodings
-                    for encoding in ['utf-8', 'latin-1', 'cp1252']:
-                        try:
-                            text = content.decode(encoding)
-                            break
-                        except UnicodeDecodeError:
-                            continue
-                    else:
-                        ui.notify('❌ Kunne ikke læse filen', color='negative')
-                        return
-                    
-                    # Opdater dokument
-                    textarea.value = text
-                    documents[doc_id]['text'] = text
-                    documents[doc_id]['version'] += 1
-                    documents[doc_id]['modified'] = datetime.now()
-                    state['version'] = documents[doc_id]['version']
-                    state['last_hash'] = get_hash(text)
-                    state['local_text'] = text
-                    
-                    update_doc_info()
-                    update_word_count()
-                    ui.notify(f'✅ Indlæste fil: {e.name}', color='positive')
+                    try:
+                        content = await e.sender.read()
+                        
+                        # Prøv forskellige encodings
+                        for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                            try:
+                                text = content.decode(encoding)
+                                break
+                            except UnicodeDecodeError:
+                                continue
+                        else:
+                            ui.notify('❌ Kunne ikke læse filen', color='negative')
+                            return
+                        
+                        # KRITISK: Sæt flag for at forhindre on_type() trigger
+                        state['programmatic_update'] = True
+                        
+                        # Annuller eventuel pending save
+                        if state['pending_save']:
+                            state['pending_save'].deactivate()
+                            state['pending_save'] = None
+                        
+                        # Opdater textarea (brug set_value for ikke at trigger events)
+                        textarea.set_value(text)
+                        
+                        # Gem direkte til server
+                        documents[doc_id]['text'] = text
+                        documents[doc_id]['version'] += 1
+                        documents[doc_id]['modified'] = datetime.now()
+                        
+                        # Opdater lokal state
+                        state['version'] = documents[doc_id]['version']
+                        state['last_hash'] = get_hash(text)
+                        state['local_text'] = text
+                        state['is_typing'] = False
+                        
+                        # Reset flag
+                        state['programmatic_update'] = False
+                        
+                        # Opdater UI
+                        update_doc_info()
+                        update_word_count()
+                        
+                        ui.notify(f'✅ Indlæste fil: {e.name} ({len(text)} tegn)', color='positive')
+                        print(f"[{user_id}] UPLOAD SUCCESS - Doc: {doc_id}, Version: {documents[doc_id]['version']}, Length: {len(text)}")
+                        
+                    except Exception as inner_ex:
+                        state['programmatic_update'] = False
+                        ui.notify(f'❌ Fejl ved filindlæsning: {str(inner_ex)}', color='negative')
+                        print(f"[{user_id}] UPLOAD ERROR: {inner_ex}")
+                        import traceback
+                        traceback.print_exc()
                 
                 asyncio.create_task(read_file())
+                
             except Exception as ex:
+                state['programmatic_update'] = False
                 ui.notify(f'❌ Fejl ved upload: {str(ex)}', color='negative')
+                print(f"[{user_id}] UPLOAD ERROR (outer): {ex}")
         
         upload = ui.upload(
             label='📁 Upload fil',
@@ -156,16 +187,34 @@ async def doc_room(doc_id: str):
         # Nyt dokument knap (clear)
         def clear_doc():
             """Ryd dokument"""
-            textarea.value = ''
+            # Sæt flag for at forhindre on_type trigger
+            state['programmatic_update'] = True
+            
+            # Annuller pending save
+            if state['pending_save']:
+                state['pending_save'].deactivate()
+                state['pending_save'] = None
+            
+            # Opdater textarea
+            textarea.set_value('')
+            
+            # Gem til server
             documents[doc_id]['text'] = ''
             documents[doc_id]['version'] += 1
             documents[doc_id]['modified'] = datetime.now()
+            
+            # Opdater state
             state['version'] = documents[doc_id]['version']
             state['last_hash'] = get_hash('')
             state['local_text'] = ''
+            state['is_typing'] = False
+            state['programmatic_update'] = False
+            
+            # Opdater UI
             update_doc_info()
             update_word_count()
             ui.notify('🗑️ Dokument ryddet', color='warning')
+            print(f"[{user_id}] CLEAR - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
         
         ui.button('🗑️ Ryd alt', on_click=clear_doc).props('flat color=negative')
     
@@ -198,6 +247,7 @@ async def doc_room(doc_id: str):
         status.text = '🟢 Forbundet'
         update_doc_info()
         update_word_count()
+        print(f"[{user_id}] SAVE - Doc: {doc_id}, Version: {documents[doc_id]['version']}, Length: {len(textarea.value)}")
     
     def sync():
         """Check for updates from others + update user count"""
@@ -217,8 +267,13 @@ async def doc_room(doc_id: str):
             
             # Only update if different from what we have locally
             if server_text != textarea.value:
-                print(f"[{user_id}] Henter opdatering v{server_version}: {server_text[:50]}...")
+                print(f"[{user_id}] SYNC PULLING - Local v{state['version']} → Server v{server_version}, Length: {len(server_text)}")
+                
+                # Sæt flag for at forhindre on_type trigger
+                state['programmatic_update'] = True
                 textarea.set_value(server_text)
+                state['programmatic_update'] = False
+                
                 state['version'] = server_version
                 state['last_hash'] = get_hash(server_text)
                 state['local_text'] = server_text
@@ -228,6 +283,10 @@ async def doc_room(doc_id: str):
     
     def on_type():
         """Called every time user types a character"""
+        # Ignorer hvis det er en programmatisk opdatering
+        if state['programmatic_update']:
+            return
+        
         state['is_typing'] = True
         state['local_text'] = textarea.value
         status.set_text('🟡 Skriver...')
@@ -246,6 +305,10 @@ async def doc_room(doc_id: str):
     
     def on_blur():
         """When textarea loses focus, save immediately"""
+        # Ignorer hvis det er en programmatisk opdatering
+        if state['programmatic_update']:
+            return
+            
         if state['pending_save']:
             state['pending_save'].deactivate()
         save()
