@@ -1,5 +1,5 @@
 # nicegui_live_collab.py
-from nicegui import ui, app, context
+from nicegui import ui, app, context, events
 import hashlib
 import uuid
 import time
@@ -181,70 +181,63 @@ async def doc_room(doc_id: str):
     # FILE OPERATIONS ROW
     # ============================================
     with ui.row().classes('gap-2 mb-4 w-full'):
-        # Upload knap - RETTET VERSION
-        def handle_upload(e):
+        # Upload knap - RETTET VERSION MED EVENTS
+        def handle_upload(e: events.UploadEventArguments):
             """Håndter fil upload - FIXED VERSION"""
             try:
-                async def read_file():
+                # Print for debugging
+                print(f"[{user_id}] UPLOAD EVENT - Attributes: {dir(e)}")
+                
+                # RETTET: Brug e.content.read() UDEN await
+                content = e.content.read()
+                
+                # Prøv forskellige encodings
+                text = None
+                for encoding in ['utf-8', 'latin-1', 'cp1252']:
                     try:
-                        # RETTET: Brug e.content.read() UDEN await - det er ikke async
-                        content = e.content.read()
-                        
-                        # Prøv forskellige encodings
-                        text = None
-                        for encoding in ['utf-8', 'latin-1', 'cp1252']:
-                            try:
-                                text = content.decode(encoding)
-                                break
-                            except UnicodeDecodeError:
-                                continue
-                        
-                        if text is None:
-                            print(f"[{user_id}] UPLOAD ERROR: Kunne ikke læse filen")
-                            status.set_text('❌ Kunne ikke læse filen')
-                            return
-                        
-                        print(f"[{user_id}] UPLOAD START - Length: {len(text)}, File: {e.name}")
-                        
-                        # 1. Annuller eventuel pending save FØRST
-                        if state['pending_save']:
-                            state['pending_save'].deactivate()
-                            state['pending_save'] = None
-                        
-                        # 2. Gem til server
-                        documents[doc_id]['text'] = text
-                        documents[doc_id]['version'] += 1
-                        documents[doc_id]['modified'] = datetime.now()
-                        
-                        print(f"[{user_id}] UPLOAD - Saved to server. Version: {documents[doc_id]['version']}")
-                        
-                        # 3. Opdater textarea direkte
-                        textarea.value = text
-                        
-                        # 4. Opdater lokal state
-                        state['version'] = documents[doc_id]['version']
-                        state['last_hash'] = get_hash(text)
-                        state['local_text'] = text
-                        state['is_typing'] = False
-                        state['skip_next_save'] = True
-                        
-                        # 5. Opdater UI
-                        update_doc_info()
-                        update_word_count()
-                        status.set_text(f'✅ Fil uploadet: {e.name}')
-                        
-                        print(f"[{user_id}] UPLOAD COMPLETE - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
-                        
-                    except Exception as inner_ex:
-                        print(f"[{user_id}] UPLOAD ERROR: {inner_ex}")
-                        import traceback
-                        traceback.print_exc()
-                        status.set_text(f'❌ Fejl ved upload')
+                        text = content.decode(encoding)
+                        break
+                    except UnicodeDecodeError:
+                        continue
                 
-                asyncio.create_task(read_file())
+                if text is None:
+                    print(f"[{user_id}] UPLOAD ERROR: Kunne ikke læse filen")
+                    status.set_text('❌ Kunne ikke læse filen')
+                    return
                 
+                print(f"[{user_id}] UPLOAD START - Length: {len(text)}, File: {e.name}")
+                
+                # 1. Annuller eventuel pending save FØRST
+                if state['pending_save']:
+                    state['pending_save'].deactivate()
+                    state['pending_save'] = None
+                
+                # 2. Gem til server
+                documents[doc_id]['text'] = text
+                documents[doc_id]['version'] += 1
+                documents[doc_id]['modified'] = datetime.now()
+                
+                print(f"[{user_id}] UPLOAD - Saved to server. Version: {documents[doc_id]['version']}")
+                
+                # 3. Opdater textarea direkte
+                textarea.value = text
+                
+                # 4. Opdater lokal state
+                state['version'] = documents[doc_id]['version']
+                state['last_hash'] = get_hash(text)
+                state['local_text'] = text
+                state['is_typing'] = False
+                state['skip_next_save'] = True
+                
+                # 5. Opdater UI
+                update_doc_info()
+                update_word_count()
+                status.set_text(f'✅ Fil uploadet: {e.name}')
+                
+                print(f"[{user_id}] UPLOAD COMPLETE - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
+                    
             except Exception as ex:
-                print(f"[{user_id}] UPLOAD ERROR (outer): {ex}")
+                print(f"[{user_id}] UPLOAD ERROR: {ex}")
                 import traceback
                 traceback.print_exc()
                 status.set_text('❌ Upload fejlede')
