@@ -199,8 +199,7 @@ async def doc_room(doc_id: str):
                 ui.notify(f'Fil uploadet: {filename} ({size} bytes)', color='positive')
                 print(f"[{user_id}] UPLOAD COMPLETE - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
                 # 🔄 Tell all clients to refresh
-                ui.broadcast('reload')
-                ui.on('reload', lambda: ui.run_javascript('window.location.reload()'))
+                app.emit('reload', {'doc_id': doc_id})
             except Exception as ex:
                 print(f"[{user_id}] UPLOAD ERROR: {ex}")
                 import traceback
@@ -260,6 +259,11 @@ async def doc_room(doc_id: str):
     textarea.on('blur', on_blur)
     ui.timer(0.15, sync)
     update_word_count()
+     # 🔄 Lyt efter reload-signaler fra andre brugere
+    app.on('reload', lambda data: (
+        ui.run_javascript('window.location.reload()')
+        if data.get('doc_id') == doc_id else None
+    ))
 
 # ============================================
 # HOME PAGE
