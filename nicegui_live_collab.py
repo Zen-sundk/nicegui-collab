@@ -198,7 +198,9 @@ async def doc_room(doc_id: str):
                 status.set_text(f'✅ Fil uploadet: {filename}')
                 ui.notify(f'Fil uploadet: {filename} ({size} bytes)', color='positive')
                 print(f"[{user_id}] UPLOAD COMPLETE - Doc: {doc_id}, Version: {documents[doc_id]['version']}")
-                ui.run_javascript('window.location.reload()')  # ✅ ensures all clients refresh
+                # 🔄 Tell all clients to refresh
+                ui.broadcast('reload')
+                ui.on('reload', lambda: ui.run_javascript('window.location.reload()'))
             except Exception as ex:
                 print(f"[{user_id}] UPLOAD ERROR: {ex}")
                 import traceback
