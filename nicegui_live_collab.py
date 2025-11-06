@@ -1,5 +1,5 @@
 # nicegui_live_collab.py
-from nicegui import ui
+from nicegui import ui, app
 import hashlib
 import uuid
 import time
@@ -19,12 +19,12 @@ def get_hash(text):
     return hashlib.md5(text.encode()).hexdigest()
 
 def cleanup_inactive_users(doc_id):
-    """Remove users who haven't been seen in 1 second (faster cleanup)"""
+    """Remove users who haven't been seen in 1 second"""
     if doc_id not in active_users:
         return 0
     current_time = time.time()
     active_users[doc_id] = {uid: ts for uid, ts in active_users[doc_id].items() 
-                            if current_time - ts < 1}  # Reduced from 3 to 1 second
+                            if current_time - ts < 1}
     return len(active_users[doc_id])
 
 # ============================================
@@ -32,7 +32,7 @@ def cleanup_inactive_users(doc_id):
 # ============================================
 @ui.page('/docs/{doc_id}')
 async def doc_room(doc_id: str):
-    user_id = str(uuid.uuid4())[:8]  # Unique ID for this user
+    user_id = str(uuid.uuid4())[:8]
     
     # Initialize document if new
     if doc_id not in documents:
@@ -40,18 +40,20 @@ async def doc_room(doc_id: str):
     if doc_id not in active_users:
         active_users[doc_id] = {}
     
-    # Clean up old inactive users before adding new one
     cleanup_inactive_users(doc_id)
-    active_users[doc_id][user_id] = time.time()  # Mark user as active
+    active_users[doc_id][user_id] = time.time()
     
     # ============================================
     # UI ELEMENTS
     # ============================================
     ui.label(f'Document: {doc_id}').classes('text-2xl font-bold mb-4')
     
+    # Create a label to display the shared text (read-only view)
+    shared_display = ui.label().classes('hidden')
+    
+    # Create the editable textarea
     textarea = ui.textarea('Live document (shared)', 
                           placeholder='Start typing...').props('outlined autogrow').classes('w-full')
-    textarea.value = documents[doc_id]['text']
     
     with ui.row().classes('gap-4 mt-2'):
         status = ui.label('🟢 Connected').classes('text-sm')
@@ -64,8 +66,12 @@ async def doc_room(doc_id: str):
         'version': documents[doc_id]['version'],
         'is_typing': False,
         'last_hash': get_hash(documents[doc_id]['text']),
-        'pending_save': None
+        'pending_save': None,
+        'local_text': documents[doc_id]['text']
     }
+    
+    # Set initial value
+    textarea.value = state['local_text']
     
     # ============================================
     # CORE FUNCTIONS
@@ -76,57 +82,66 @@ async def doc_room(doc_id: str):
         documents[doc_id]['version'] += 1
         state['version'] = documents[doc_id]['version']
         state['last_hash'] = get_hash(textarea.value)
+        state['local_text'] = textarea.value
         status.text = '🟢 Connected'
     
-    async def sync():
+    def sync():
         """Check for updates from others + update user count"""
         # Update this user's presence
         active_users[doc_id][user_id] = time.time()
-        user_count.text = f'👥 Active users: {cleanup_inactive_users(doc_id)}'
+        user_count.set_text(f'👥 Active users: {cleanup_inactive_users(doc_id)}')
         
         # Don't pull updates while typing
         if state['is_typing']:
+            status.set_text('🟡 Typing... (sync paused)')
             return
         
         # Pull updates if server has newer version
-        if documents[doc_id]['version'] > state['version']:
+        server_version = documents[doc_id]['version']
+        if server_version > state['version']:
             server_text = documents[doc_id]['text']
-            new_hash = get_hash(server_text)
-            if new_hash != state['last_hash']:
-                # Use JavaScript to update the textarea value in the browser
-                await ui.run_javascript(f'''
-                    const el = getElement({textarea.id});
-                    if (el && el.$el) {{
-                        el.$el.value = {repr(server_text)};
-                        el.$forceUpdate();
-                    }}
-                ''')
-                state['version'] = documents[doc_id]['version']
-                state['last_hash'] = new_hash
+            
+            # Only update if different from what we have locally
+            if server_text != textarea.value:
+                print(f"[{user_id}] Pulling update v{server_version}: {server_text[:50]}...")
+                textarea.set_value(server_text)
+                state['version'] = server_version
+                state['last_hash'] = get_hash(server_text)
+                state['local_text'] = server_text
+                status.set_text('🟢 Synced from server')
     
     def on_type():
         """Called every time user types a character"""
         state['is_typing'] = True
-        status.text = '🟡 Typing...'
+        state['local_text'] = textarea.value
+        status.set_text('🟡 Typing...')
         
         # Cancel previous save timer
         if state['pending_save']:
             state['pending_save'].deactivate()
         
         # Save 200ms after user stops typing
-        state['pending_save'] = ui.timer(0.2, lambda: [
-            save(), 
-            setattr(state, 'is_typing', False)
-        ], once=True)
+        def finish_typing():
+            save()
+            state['is_typing'] = False
+        
+        state['pending_save'] = ui.timer(0.2, finish_typing, once=True)
+    
+    def on_blur():
+        """When textarea loses focus, save immediately"""
+        if state['pending_save']:
+            state['pending_save'].deactivate()
+        save()
+        state['is_typing'] = False
     
     # ============================================
     # EVENT BINDINGS
     # ============================================
     textarea.on('update:model-value', on_type)
-    textarea.on('blur', lambda: [state['pending_save'] and state['pending_save'].deactivate(), 
-                                  save(), setattr(state, 'is_typing', False)])
+    textarea.on('blur', on_blur)
     
-    ui.timer(0.1, sync)  # Check for updates every 100ms
+    # Check for updates every 150ms
+    ui.timer(0.15, sync)
 
 # ============================================
 # HOME PAGE
