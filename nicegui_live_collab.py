@@ -19,12 +19,12 @@ def get_hash(text):
     return hashlib.md5(text.encode()).hexdigest()
 
 def cleanup_inactive_users(doc_id):
-    """Remove users who haven't been seen in 1 second"""
+    """Remove users who haven't been seen in 0.2 second"""
     if doc_id not in active_users:
         return 0
     current_time = time.time()
     active_users[doc_id] = {uid: ts for uid, ts in active_users[doc_id].items() 
-                            if current_time - ts < 1}
+                            if current_time - ts < 0.2}
     return len(active_users[doc_id])
 
 # ============================================
