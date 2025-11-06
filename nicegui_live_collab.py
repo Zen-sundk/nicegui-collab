@@ -19,12 +19,12 @@ def get_hash(text):
     return hashlib.md5(text.encode()).hexdigest()
 
 def cleanup_inactive_users(doc_id):
-    """Remove users who haven't been seen in 2 seconds (faster cleanup)"""
+    """Remove users who haven't been seen in 1 second (faster cleanup)"""
     if doc_id not in active_users:
         return 0
     current_time = time.time()
     active_users[doc_id] = {uid: ts for uid, ts in active_users[doc_id].items() 
-                            if current_time - ts < 2}  # Reduced from 3 to 2 seconds
+                            if current_time - ts < 1}  # Reduced from 3 to 1 second
     return len(active_users[doc_id])
 
 # ============================================
@@ -93,9 +93,14 @@ async def doc_room(doc_id: str):
             server_text = documents[doc_id]['text']
             new_hash = get_hash(server_text)
             if new_hash != state['last_hash']:
-                # Force UI update by setting value directly
-                textarea.value = server_text
-                textarea.update()  # Force refresh
+                # Use JavaScript to update the textarea value in the browser
+                await ui.run_javascript(f'''
+                    const el = getElement({textarea.id});
+                    if (el && el.$el) {{
+                        el.$el.value = {repr(server_text)};
+                        el.$forceUpdate();
+                    }}
+                ''')
                 state['version'] = documents[doc_id]['version']
                 state['last_hash'] = new_hash
     
