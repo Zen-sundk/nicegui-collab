@@ -4,6 +4,7 @@ import hashlib
 import uuid
 import time
 import os
+import asyncio
 from datetime import datetime
 
 # ============================================
@@ -72,38 +73,61 @@ async def doc_room(doc_id: str):
     update_doc_info()
     
     # ============================================
+    # TEXTAREA (skal defineres før upload handler)
+    # ============================================
+    textarea = ui.textarea('Live dokument (delt)', 
+                          placeholder='Start typing...').props('outlined autogrow').classes('w-full')
+    
+    # ============================================
+    # STATE TRACKING (skal defineres før upload handler)
+    # ============================================
+    state = {
+        'version': documents[doc_id]['version'],
+        'is_typing': False,
+        'last_hash': get_hash(documents[doc_id]['text']),
+        'pending_save': None,
+        'local_text': documents[doc_id]['text']
+    }
+    
+    # Set initial value
+    textarea.value = state['local_text']
+    
+    # ============================================
     # FILE OPERATIONS ROW
     # ============================================
     with ui.row().classes('gap-2 mb-4 w-full'):
-        # Upload knap
+        # Upload knap - RETTET VERSION
         def handle_upload(e):
             """Håndter fil upload"""
             try:
-                # Læs filindhold
-                content = e.content.read()
+                async def read_file():
+                    content = await e.sender.read()
+                    
+                    # Prøv forskellige encodings
+                    for encoding in ['utf-8', 'latin-1', 'cp1252']:
+                        try:
+                            text = content.decode(encoding)
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    else:
+                        ui.notify('❌ Kunne ikke læse filen', color='negative')
+                        return
+                    
+                    # Opdater dokument
+                    textarea.value = text
+                    documents[doc_id]['text'] = text
+                    documents[doc_id]['version'] += 1
+                    documents[doc_id]['modified'] = datetime.now()
+                    state['version'] = documents[doc_id]['version']
+                    state['last_hash'] = get_hash(text)
+                    state['local_text'] = text
+                    
+                    update_doc_info()
+                    update_word_count()
+                    ui.notify(f'✅ Indlæste fil: {e.name}', color='positive')
                 
-                # Prøv forskellige encodings
-                for encoding in ['utf-8', 'latin-1', 'cp1252']:
-                    try:
-                        text = content.decode(encoding)
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                else:
-                    ui.notify('❌ Kunne ikke læse filen', color='negative')
-                    return
-                
-                # Opdater dokument
-                textarea.value = text
-                documents[doc_id]['text'] = text
-                documents[doc_id]['version'] += 1
-                documents[doc_id]['modified'] = datetime.now()
-                state['version'] = documents[doc_id]['version']
-                state['last_hash'] = get_hash(text)
-                state['local_text'] = text
-                
-                update_doc_info()
-                ui.notify(f'✅ Indlæste fil: {e.name}', color='positive')
+                asyncio.create_task(read_file())
             except Exception as ex:
                 ui.notify(f'❌ Fejl ved upload: {str(ex)}', color='negative')
         
@@ -140,15 +164,10 @@ async def doc_room(doc_id: str):
             state['last_hash'] = get_hash('')
             state['local_text'] = ''
             update_doc_info()
+            update_word_count()
             ui.notify('🗑️ Dokument ryddet', color='warning')
         
         ui.button('🗑️ Ryd alt', on_click=clear_doc).props('flat color=negative')
-    
-    # ============================================
-    # TEXTAREA
-    # ============================================
-    textarea = ui.textarea('Live dokument (delt)', 
-                          placeholder='Start typing...').props('outlined autogrow').classes('w-full')
     
     # ============================================
     # STATUS ROW
@@ -157,20 +176,6 @@ async def doc_room(doc_id: str):
         status = ui.label('🟢 Forbundet').classes('text-sm')
         user_count = ui.label('👥 Aktive brugere: 1').classes('text-sm')
         word_count = ui.label('📝 Ord: 0').classes('text-sm text-gray-600')
-    
-    # ============================================
-    # STATE TRACKING
-    # ============================================
-    state = {
-        'version': documents[doc_id]['version'],
-        'is_typing': False,
-        'last_hash': get_hash(documents[doc_id]['text']),
-        'pending_save': None,
-        'local_text': documents[doc_id]['text']
-    }
-    
-    # Set initial value
-    textarea.value = state['local_text']
     
     # ============================================
     # CORE FUNCTIONS
