@@ -19,12 +19,12 @@ def get_hash(text):
     return hashlib.md5(text.encode()).hexdigest()
 
 def cleanup_inactive_users(doc_id):
-    """Remove users who haven't been seen in 5 seconds"""
+    """Remove users who haven't been seen in 2 seconds (faster cleanup)"""
     if doc_id not in active_users:
         return 0
     current_time = time.time()
     active_users[doc_id] = {uid: ts for uid, ts in active_users[doc_id].items() 
-                            if current_time - ts < 5}
+                            if current_time - ts < 2}  # Reduced from 3 to 2 seconds
     return len(active_users[doc_id])
 
 # ============================================
@@ -40,6 +40,8 @@ async def doc_room(doc_id: str):
     if doc_id not in active_users:
         active_users[doc_id] = {}
     
+    # Clean up old inactive users before adding new one
+    cleanup_inactive_users(doc_id)
     active_users[doc_id][user_id] = time.time()  # Mark user as active
     
     # ============================================
@@ -88,9 +90,12 @@ async def doc_room(doc_id: str):
         
         # Pull updates if server has newer version
         if documents[doc_id]['version'] > state['version']:
-            new_hash = get_hash(documents[doc_id]['text'])
+            server_text = documents[doc_id]['text']
+            new_hash = get_hash(server_text)
             if new_hash != state['last_hash']:
-                textarea.set_value(documents[doc_id]['text'])  # Use set_value() instead!
+                # Force UI update by setting value directly
+                textarea.value = server_text
+                textarea.update()  # Force refresh
                 state['version'] = documents[doc_id]['version']
                 state['last_hash'] = new_hash
     
