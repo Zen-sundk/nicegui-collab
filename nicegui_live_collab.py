@@ -90,7 +90,7 @@ async def doc_room(doc_id: str):
         if documents[doc_id]['version'] > state['version']:
             new_hash = get_hash(documents[doc_id]['text'])
             if new_hash != state['last_hash']:
-                textarea.value = documents[doc_id]['text']
+                textarea.set_value(documents[doc_id]['text'])  # Use set_value() instead!
                 state['version'] = documents[doc_id]['version']
                 state['last_hash'] = new_hash
     
